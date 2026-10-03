@@ -1,0 +1,24 @@
+# Secrets and credentials
+.env
+*.env
+!.env.example
+*.pem
+*.key
+id_*
+!*.pub
+.vault_pass
+*.vault_pass
+secrets.yml
+secrets.yaml
+
+# Real inventory and host-specific variables (publish *.example.* only)
+ansible/inventory.yml
+ansible/inventories/
+ansible/host_vars/
+ansible/group_vars/
+
+# Ansible / editor / OS noise
+*.retry
+.obsidian/
+.vscode/
+.DS_Store

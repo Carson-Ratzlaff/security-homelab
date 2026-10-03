@@ -1,0 +1,20 @@
+---
+# Example inventory. Copy to inventory.yml (which is gitignored) and edit.
+# Addresses below are from the documentation range (RFC 5737), not real hosts.
+all:
+  vars:
+    ansible_user: labadmin
+    ansible_connection: ssh
+    # Fleet Server URL that Elastic Agents enroll against
+    fleet_url: "https://192.0.2.10:8220"
+  children:
+    elk:
+      hosts:
+        elk-1:
+          ansible_host: 192.0.2.10
+          # Address Kibana binds to (used by install-elastic.yml)
+          external_ip: 192.0.2.10
+    red:
+      hosts:
+        kali-1:
+          ansible_host: 192.0.2.20

@@ -1,0 +1,162 @@
+---
+# Installs Elasticsearch and Kibana from the Elastic 9.x apt repository,
+# sets the elastic superuser password, enrolls Kibana, and generates the
+# Kibana encryption keys needed for Fleet.
+#
+# The elastic password is prompted for at run time (never stored in the repo).
+- name: Install Elasticsearch and Kibana
+  hosts: elk
+  vars_prompt:
+
+    - name: elastic_password_ansible
+      prompt: What would you like to set elastic password as?
+      private: true
+
+  pre_tasks:
+    - name: Require external_ip to be defined for this host
+      ansible.builtin.assert:
+        that:
+          - external_ip is defined
+        fail_msg: "Set external_ip in the inventory (see inventory.example.yml)."
+
+  tasks:
+  - name: Add Elastic repository gpg key
+    ansible.builtin.get_url:
+      url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+      dest: /usr/share/keyrings/elasticsearch-keyring.asc
+    become: true
+
+  - name: Add Elastic Repo
+    ansible.builtin.apt_repository:
+      repo: "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.asc] https://artifacts.elastic.co/packages/9.x/apt stable main"
+      state: present
+      filename: elasticsearch
+    become: true
+
+  - name: Install Packages (apt-transport-https, elasticsearch, kibana)
+    ansible.builtin.apt:
+      pkg:
+      - apt-transport-https
+      - elasticsearch
+      - kibana
+      state: latest
+      update_cache: yes
+    become: true
+
+  - name: Daemon reload
+    ansible.builtin.systemd_service:
+      daemon_reload: true
+    become: true
+
+  - name: Enable and Start elasticsearch systemd
+    ansible.builtin.systemd_service:
+      name: elasticsearch.service
+      state: started
+      enabled: true
+    become: true
+
+  - name: Check if Elastic User has been reset
+    ansible.builtin.uri:
+      url: "https://localhost:9200"
+      method: GET
+      user: elastic
+      password: "{{ elastic_password_ansible }}"
+      ca_path: /etc/elasticsearch/certs/http_ca.crt
+      force_basic_auth: yes
+    become: true
+    register: elastic_user_reset
+    ignore_errors: true
+    no_log: true
+
+  - name: Reset Elastic User Password
+    ansible.builtin.expect:
+      command: /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+      responses:
+        (?i)confirm: "y"
+        (?i)password: "{{ elastic_password_ansible }}"
+    become: true
+    register: elastic_password_reset_output
+    no_log: true
+    when: elastic_user_reset.status != 200
+
+  - name: Ensure elasticsearch is running
+    ansible.builtin.uri:
+      url: "https://localhost:9200"
+      method: GET
+      user: elastic
+      password: "{{ elastic_password_ansible }}"
+      ca_path: /etc/elasticsearch/certs/http_ca.crt
+      force_basic_auth: yes
+    become: true
+    no_log: true
+    when: elastic_user_reset.status != 200
+
+  - name: Configure kibana to be external facing
+    ansible.builtin.lineinfile:
+      path: /etc/kibana/kibana.yml
+      regexp: '^#server.host: "localhost"'
+      line: "server.host: {{ external_ip }}"
+    become: true
+
+  - name: Daemon reload
+    ansible.builtin.systemd_service:
+      daemon_reload: true
+    become: true
+
+  - name: Enable and Start Kibana Systemd
+    ansible.builtin.systemd_service:
+      name: kibana.service
+      state: started
+      enabled: true
+    become: true
+
+  - name: Check if Kibana has been enrolled
+    ansible.builtin.command: grep "^elasticsearch.serviceAccountToken" /etc/kibana/kibana.yml
+    register: kibana_enrolled
+    failed_when: false
+    changed_when: false
+    become: true
+
+  - name: Create Elasticsearch enrollment token for kibana
+    ansible.builtin.command: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token --scope kibana
+    register: elastic_enrollment_token_ansible
+    become: true
+    no_log: true
+    when: kibana_enrolled.rc != 0
+
+  - name: Enroll Kibana using elastic enrollment token from before
+    ansible.builtin.command: /usr/share/kibana/bin/kibana-setup --enrollment-token {{ elastic_enrollment_token_ansible.stdout }}
+    become: true
+    no_log: true
+    when: kibana_enrolled.rc != 0
+
+  - name: check if encryption keys for elastic fleet have been created
+    ansible.builtin.stat:
+      path: /etc/kibana/kibana.sample.yml
+    become: true
+    register: encryption_done
+
+  - name: Configure encryption keys for elastic fleet
+    ansible.builtin.expect:
+      command: /usr/share/kibana/bin/kibana-encryption-keys generate -i
+      responses:
+        (?i)Set xpack.encryptedSavedObjects: "y"
+        (?i)Set xpack.reporting: "y"
+        (?i)Set xpack.security: "y"
+        (?i)Save generated keys: "y"
+        (?i)What filename: "/etc/kibana/kibana.sample.yml"
+    become: true
+    no_log: true
+    when: encryption_done.stat.exists != true
+    ignore_errors: true
+
+  - name: Update kibana yml with new encryption keys
+    ansible.builtin.shell: cat "/etc/kibana/kibana.sample.yml" >> /etc/kibana/kibana.yml
+    become: true
+    when: encryption_done.stat.exists != true
+
+  # NOTE: this reboots the whole host (not just the service) so that the
+  # new Kibana configuration is picked up cleanly.
+  - name: Reboot host to apply configuration
+    ansible.builtin.reboot:
+    become: true

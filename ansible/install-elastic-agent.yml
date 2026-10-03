@@ -1,0 +1,57 @@
+---
+# Installs Elastic Agent (Linux x86_64) and enrolls it in Fleet.
+#
+# The Fleet enrollment token is prompted for at run time and is never stored
+# in the repo. The Fleet Server URL comes from the inventory (fleet_url).
+- name: Install elastic agent on hosts
+  hosts: all
+  vars_prompt:
+
+    - name: fleet_enrollment_token
+      prompt: Fleet enrollment token
+      private: true
+
+  vars:
+    elastic_agent_version: "9.4.3"
+    elastic_agent_sha256: "af8a856171b57cc9bb3d9cb8d5d7f8e98886a87522e9361534ff1ac5b9c66319"
+
+  tasks:
+
+    - name: Check if elastic agent has been installed on Linux
+      ansible.builtin.stat:
+        path: /opt/Elastic/Agent/elastic-agent
+      register: elastic_agent_exists
+      when: ansible_facts.system == "Linux"
+
+    - name: Pull Elastic Agent install package
+      ansible.builtin.get_url:
+        url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-linux-x86_64.tar.gz"
+        dest: "/opt/elastic-agent-{{ elastic_agent_version }}-linux-x86_64.tar.gz"
+        checksum: "sha256:{{ elastic_agent_sha256 }}"
+      when: not elastic_agent_exists.stat.exists
+      become: true
+      register: install_package_pulled
+
+    - name: Unpackage file downloaded
+      ansible.builtin.unarchive:
+        src: "/opt/elastic-agent-{{ elastic_agent_version }}-linux-x86_64.tar.gz"
+        dest: /opt/
+        remote_src: yes
+      become: true
+      when: not elastic_agent_exists.stat.exists
+
+    # --insecure skips TLS verification of the Fleet Server certificate.
+    # Acceptable for an isolated lab with a self-signed cert; for anything
+    # else, pass --certificate-authorities (or --fleet-server-es-ca) instead.
+    - name: Install Elastic Agent and enroll in Fleet
+      ansible.builtin.command:
+        argv:
+          - "/opt/elastic-agent-{{ elastic_agent_version }}-linux-x86_64/elastic-agent"
+          - install
+          - "--url={{ fleet_url }}"
+          - "--enrollment-token={{ fleet_enrollment_token }}"
+          - --insecure
+          - --non-interactive
+      become: true
+      no_log: true
+      when: not elastic_agent_exists.stat.exists

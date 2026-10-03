@@ -1,0 +1,9 @@
+#cloud-config
+growpart:
+  mode: auto
+  devices: ["/", "/boot", "/var", "/home"]
+
+resize_rootfs: true
+
+runcmd:
+  - /usr/local/sbin/grow-extra-disks.sh
